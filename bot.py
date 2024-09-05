@@ -21,11 +21,24 @@ def init_db():
         )
     ''')
     cursor.execute('''
+        CREATE TABLE IF NOT EXISTS players (
+            id SERIAL PRIMARY KEY,
+            name TEXT UNIQUE
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS tournament_players (
+            id SERIAL PRIMARY KEY,
+            tournament_id INTEGER REFERENCES tournaments(id),
+            player_id INTEGER REFERENCES players(id)
+        )
+    ''')
+    cursor.execute('''
         CREATE TABLE IF NOT EXISTS matches (
             id SERIAL PRIMARY KEY,
             tournament_id INTEGER REFERENCES tournaments(id),
-            player1 TEXT,
-            player2 TEXT,
+            player1_id INTEGER REFERENCES players(id),
+            player2_id INTEGER REFERENCES players(id),
             score1 INTEGER,
             score2 INTEGER
         )
@@ -35,18 +48,7 @@ def init_db():
             player TEXT PRIMARY KEY,
             goals INTEGER DEFAULT 0,
             wins INTEGER DEFAULT 0,
-            losses INTEGER DEFAULT 0,
-            average_goals FLOAT DEFAULT 0,
-            achievements TEXT DEFAULT '',
-            challenges_completed INTEGER DEFAULT 0
-        )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS achievements (
-            id SERIAL PRIMARY KEY,
-            name TEXT,
-            description TEXT,
-            player TEXT REFERENCES statistics(player)
+            losses INTEGER DEFAULT 0
         )
     ''')
     conn.commit()
@@ -62,7 +64,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         [InlineKeyboardButton("Ayuda", callback_data='help')]
     ]
     reply_markup = InlineKeyboardMarkup(buttons)
-    await update.message.reply_text('¡Hola, campeón! ⚽️ Bienvenido al bot de los pibardos, estas listo para el FIFA? ¿Qué te gustaría hacer?', reply_markup=reply_markup)
+    await update.message.reply_text('¡Hola, campeón! ⚽️ Bienvenido al bot de los pibardos, estás listo para el FIFA? ¿Qué te gustaría hacer?', reply_markup=reply_markup)
 
 # Función para manejar los botones del menú principal
 async def button_handler(update: Update, context: CallbackContext) -> None:
@@ -90,15 +92,25 @@ async def register_player(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     conn = psycopg2.connect(DATABASE_URL)
     cursor = conn.cursor()
     try:
-        cursor.execute('INSERT INTO statistics (player) VALUES (%s)', (player_name,))
+        cursor.execute('INSERT INTO players (name) VALUES (%s) ON CONFLICT (name) DO NOTHING RETURNING id', (player_name,))
+        player_id = cursor.fetchone()
         conn.commit()
-        await update.message.reply_text(f'¡{player_name} ha sido registrado con éxito! ⚽️')
-    except psycopg2.IntegrityError:
-        await update.message.reply_text(f'El jugador {player_name} ya está registrado. 📝')
+        
+        if player_id:
+            await update.message.reply_text(f'¡{player_name} ha sido registrado con éxito! ⚽️')
+        else:
+            await update.message.reply_text(f'El jugador {player_name} ya está registrado. 📝')
+    except Exception as e:
+        await update.message.reply_text(f'Error: {e}')
     conn.close()
 
 # Función para iniciar el torneo
 async def start_tournament(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if len(context.args) != 1 or not context.args[0].isdigit():
+        await update.message.reply_text('⚠️ Por favor, usa el formato: /start_tournament <número de participantes>')
+        return
+
+    num_participants = int(context.args[0])
     conn = psycopg2.connect(DATABASE_URL)
     cursor = conn.cursor()
     cursor.execute('SELECT id FROM tournaments WHERE end_date IS NULL')
@@ -106,11 +118,23 @@ async def start_tournament(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     
     if active_tournament:
         await update.message.reply_text('⚠️ Ya hay un torneo en curso. Usa /end_tournament para finalizarlo.')
+        conn.close()
+        return
+
+    cursor.execute('INSERT INTO tournaments DEFAULT VALUES RETURNING id')
+    tournament_id = cursor.fetchone()[0]
+    conn.commit()
+
+    # Guardar el modo de torneo
+    if num_participants <= 4:
+        mode = 'Eliminación'
     else:
-        cursor.execute('INSERT INTO tournaments DEFAULT VALUES RETURNING id')
-        tournament_id = cursor.fetchone()[0]
-        conn.commit()
-        await update.message.reply_text(f'¡El torneo ha comenzado! 🏁 ID del torneo: {tournament_id} 🏆')
+        mode = 'Todos contra todos'
+    
+    cursor.execute('INSERT INTO tournament_modes (tournament_id, mode) VALUES (%s, %s)', (tournament_id, mode))
+    conn.commit()
+
+    await update.message.reply_text(f'¡El torneo ha comenzado! 🏁 ID del torneo: {tournament_id} 🏆\nModo: {mode}\nPor favor, registra a los jugadores usando el comando /register_player <nombre>')
     conn.close()
 
 # Función para registrar un partido
@@ -120,7 +144,7 @@ async def register_match(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await update.message.reply_text('⚠️ Por favor, usa el formato: /match @jugador1 goles1 @jugador2 goles2')
             return
         
-        player1, score1, player2, score2 = context.args
+        player1_name, score1, player2_name, score2 = context.args
         score1, score2 = int(score1), int(score2)
 
         conn = psycopg2.connect(DATABASE_URL)
@@ -133,99 +157,25 @@ async def register_match(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
 
         tournament_id = tournament_id[0]
-        cursor.execute('INSERT INTO matches (tournament_id, player1, player2, score1, score2) VALUES (%s, %s, %s, %s, %s)', (tournament_id, player1, player2, score1, score2))
-        conn.commit()
+        cursor.execute('SELECT id FROM players WHERE name = %s', (player1_name,))
+        player1_id = cursor.fetchone()
+        cursor.execute('SELECT id FROM players WHERE name = %s', (player2_name,))
+        player2_id = cursor.fetchone()
 
-        # Actualizar estadísticas
-        update_statistics(player1, score1, player2, score2)
-        
-        await update.message.reply_text(f'Partido registrado: {player1} {score1} - {player2} {score2} ⚽️')
+        if player1_id and player2_id:
+            player1_id = player1_id[0]
+            player2_id = player2_id[0]
+            cursor.execute('INSERT INTO matches (tournament_id, player1_id, player2_id, score1, score2) VALUES (%s, %s, %s, %s, %s)', (tournament_id, player1_id, player2_id, score1, score2))
+            conn.commit()
+
+            # Actualizar estadísticas
+            update_statistics(player1_name, score1, player2_name, score2)
+            
+            await update.message.reply_text(f'Partido registrado: {player1_name} {score1} - {player2_name} {score2} ⚽️')
+        else:
+            await update.message.reply_text('Uno o ambos jugadores no están registrados.')
     except ValueError:
         await update.message.reply_text('⚠️ Error en el formato de los goles. Deben ser números.')
-
-# Función para finalizar el torneo
-async def end_tournament(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    conn = psycopg2.connect(DATABASE_URL)
-    cursor = conn.cursor()
-    cursor.execute('SELECT id FROM tournaments WHERE end_date IS NULL ORDER BY start_date DESC LIMIT 1')
-    tournament_id = cursor.fetchone()
-
-    if not tournament_id:
-        await update.message.reply_text('No hay torneos en curso para finalizar. 🏳️')
-    else:
-        tournament_id = tournament_id[0]
-        cursor.execute('UPDATE tournaments SET end_date = CURRENT_TIMESTAMP WHERE id = %s', (tournament_id,))
-        conn.commit()
-
-        # Mostrar estadísticas del torneo
-        await show_tournament_stats(update, tournament_id)
-
-        await update.message.reply_text(f'🏁 El torneo {tournament_id} ha finalizado.')
-    conn.close()
-
-# Función para mostrar estadísticas del torneo
-async def show_tournament_stats(update: Update, tournament_id) -> None:
-    conn = psycopg2.connect(DATABASE_URL)
-    cursor = conn.cursor()
-    
-    # Obtener estadísticas de los jugadores
-    cursor.execute('''
-        SELECT player, SUM(score1 + score2) as total_goals, SUM(CASE WHEN score1 > score2 THEN 1 ELSE 0 END) as total_wins, SUM(CASE WHEN score1 < score2 THEN 1 ELSE 0 END) as total_losses
-        FROM matches
-        JOIN statistics ON player = ANY (ARRAY[player1, player2])
-        WHERE tournament_id = %s
-        GROUP BY player
-        ORDER BY total_goals DESC
-    ''', (tournament_id,))
-    stats = cursor.fetchall()
-    
-    if stats:
-        message = "📊 Estadísticas del Torneo 📊\n\n"
-        for player, total_goals, total_wins, total_losses in stats:
-            message += f"{player}: Goles Totales: {total_goals}, Victorias: {total_wins}, Derrotas: {total_losses}\n"
-        await update.message.reply_text(message)
-    else:
-        await update.message.reply_text("No se encontraron estadísticas para este torneo.")
-    
-    conn.close()
-
-# Función para mostrar logros
-async def achievements(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    conn = psycopg2.connect(DATABASE_URL)
-    cursor = conn.cursor()
-    cursor.execute('SELECT player, achievements FROM statistics WHERE achievements != \'\'')
-    achievements_data = cursor.fetchall()
-    conn.close()
-
-    if achievements_data:
-        message = "🏅 Logros de Jugadores 🏅\n\n"
-        for player, achievements in achievements_data:
-            message += f"{player}: {achievements}\n"
-        await update.message.reply_text(message)
-    else:
-        await update.message.reply_text("No hay logros registrados aún. ¡Participa en torneos y gana logros!")
-
-# Función para manejar los modos de juego
-async def game_modes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    buttons = [
-        [InlineKeyboardButton("Modo 2 Jugadores", callback_data='mode_2')],
-        [InlineKeyboardButton("Modo 4 Jugadores", callback_data='mode_4')],
-        [InlineKeyboardButton("Modo 6 Jugadores", callback_data='mode_6')]
-    ]
-    reply_markup = InlineKeyboardMarkup(buttons)
-    await update.message.reply_text('Selecciona el modo de juego:', reply_markup=reply_markup)
-
-# Función para manejar los comandos /help y otras funcionalidades
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    help_text = (
-        "/register NombreJugador - Registra un nuevo jugador\n"
-        "/start_tournament - Inicia un nuevo torneo\n"
-        "/end_tournament - Finaliza el torneo actual\n"
-        "/match @jugador1 goles1 @jugador2 goles2 - Registra un partido\n"
-        "/game_modes - Muestra los modos de juego disponibles\n"
-        "/achievements - Muestra los logros de los jugadores\n"
-    )
-    await update.message.reply_text(help_text)
 
 # Función para actualizar estadísticas
 def update_statistics(player1, score1, player2, score2):
@@ -255,17 +205,82 @@ def update_statistics(player1, score1, player2, score2):
     conn.commit()
     conn.close()
 
+# Función para finalizar el torneo
+async def end_tournament(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    conn = psycopg2.connect(DATABASE_URL)
+    cursor = conn.cursor()
+    cursor.execute('SELECT id FROM tournaments WHERE end_date IS NULL ORDER BY start_date DESC LIMIT 1')
+    tournament_id = cursor.fetchone()
+
+    if tournament_id:
+        tournament_id = tournament_id[0]
+        cursor.execute('UPDATE tournaments SET end_date = CURRENT_TIMESTAMP WHERE id = %s', (tournament_id,))
+        conn.commit()
+
+        # Obtener estadísticas finales
+        cursor.execute('''
+            SELECT player, goals, wins, losses
+            FROM statistics
+        ''')
+        results = cursor.fetchall()
+
+        stats_message = '📊 Estadísticas Finales del Torneo:\n'
+        for player, goals, wins, losses in results:
+            stats_message += f'{player} - Goles: {goals}, Victorias: {wins}, Derrotas: {losses}\n'
+
+        await update.message.reply_text(f'El torneo con ID {tournament_id} ha finalizado. 🏆\n{stats_message}')
+    else:
+        await update.message.reply_text('No hay torneos en curso.')
+
+    conn.close()
+
+# Función para mostrar los modos de juego
+async def game_modes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    modes_message = (
+        '🔢 Modos de Torneo:\n'
+        '- Eliminación: Cada jugador es eliminado después de una derrota.\n'
+        '- Todos contra todos: Todos los jugadores se enfrentan entre sí.\n'
+    )
+    await update.message.reply_text(modes_message)
+
+# Función para mostrar los logros
+async def achievements(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    conn = psycopg2.connect(DATABASE_URL)
+    cursor = conn.cursor()
+    cursor.execute('SELECT player, goals, wins, losses FROM statistics ORDER BY wins DESC, goals DESC')
+    results = cursor.fetchall()
+    
+    achievements_message = '🏆 Logros:\n'
+    for player, goals, wins, losses in results:
+        achievements_message += f'{player} - Goles: {goals}, Victorias: {wins}, Derrotas: {losses}\n'
+    
+    await update.message.reply_text(achievements_message)
+    conn.close()
+
+# Función para la ayuda
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    help_message = (
+        '📝 Comandos Disponibles:\n'
+        '/start - Inicia el bot y muestra el menú principal.\n'
+        '/register <nombre> - Registra un nuevo jugador.\n'
+        '/start_tournament <número de participantes> - Inicia un nuevo torneo.\n'
+        '/match <jugador1> <goles1> <jugador2> <goles2> - Registra un partido.\n'
+        '/end_tournament - Finaliza el torneo actual.\n'
+        '/game_modes - Muestra los modos de juego disponibles.\n'
+        '/achievements - Muestra los logros y estadísticas de los jugadores.\n'
+    )
+    await update.message.reply_text(help_message)
+
 if __name__ == '__main__':
     init_db()
-
     application = ApplicationBuilder().token(TOKEN).build()
-    
-    application.add_handler(CommandHandler('start', start))
-    application.add_handler(CommandHandler('register', register_player))
-    application.add_handler(CommandHandler('match', register_match))
-    application.add_handler(CommandHandler('end_tournament', end_tournament))
-    application.add_handler(CommandHandler('achievements', achievements))
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("register", register_player))
+    application.add_handler(CommandHandler("start_tournament", start_tournament))
+    application.add_handler(CommandHandler("match", register_match))
+    application.add_handler(CommandHandler("end_tournament", end_tournament))
+    application.add_handler(CommandHandler("game_modes", game_modes))
+    application.add_handler(CommandHandler("achievements", achievements))
+    application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CallbackQueryHandler(button_handler))
-    application.add_handler(CommandHandler('help', help_command))
-
     application.run_polling()
