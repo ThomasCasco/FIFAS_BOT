@@ -1,7 +1,7 @@
 import os
 import psycopg2
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler
 
 # Aquí coloca tu token
 TOKEN = '7266284922:AAEkwTlo1C4rH74ziFTw8ySQMz8HU1JRGPM'
@@ -36,7 +36,17 @@ def init_db():
             goals INTEGER DEFAULT 0,
             wins INTEGER DEFAULT 0,
             losses INTEGER DEFAULT 0,
-            average_goals FLOAT DEFAULT 0
+            average_goals FLOAT DEFAULT 0,
+            achievements TEXT DEFAULT '',
+            challenges_completed INTEGER DEFAULT 0
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS achievements (
+            id SERIAL PRIMARY KEY,
+            name TEXT,
+            description TEXT,
+            player TEXT REFERENCES statistics(player)
         )
     ''')
     conn.commit()
@@ -44,13 +54,19 @@ def init_db():
 
 # Función que maneja el comando /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text('¡Hola! Soy tu bot de FIFA. Usa /register para agregar jugadores y /start_tournament para iniciar el torneo.')
+    buttons = [
+        [InlineKeyboardButton("Registrar Jugador", callback_data='/register')],
+        [InlineKeyboardButton("Iniciar Torneo", callback_data='/start_tournament')],
+        [InlineKeyboardButton("Ayuda", callback_data='/help')]
+    ]
+    reply_markup = InlineKeyboardMarkup(buttons)
+    await update.message.reply_text('¡Hola, campeón! ⚽️ Bienvenido al bot de FIFA. ¿Qué te gustaría hacer?', reply_markup=reply_markup)
 
 # Función para registrar jugadores
 async def register_player(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     player_name = ' '.join(context.args)
     if not player_name:
-        await update.message.reply_text('Por favor, usa el formato: /register NombreJugador')
+        await update.message.reply_text('⚠️ Por favor, usa el formato: /register NombreJugador')
         return
     
     conn = psycopg2.connect(DATABASE_URL)
@@ -58,27 +74,32 @@ async def register_player(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     try:
         cursor.execute('INSERT INTO statistics (player) VALUES (%s)', (player_name,))
         conn.commit()
-        await update.message.reply_text(f'Jugador {player_name} registrado con éxito.')
+        await update.message.reply_text(f'¡{player_name} ha sido registrado con éxito! ⚽️')
     except psycopg2.IntegrityError:
-        await update.message.reply_text(f'El jugador {player_name} ya está registrado.')
+        await update.message.reply_text(f'El jugador {player_name} ya está registrado. 📝')
     conn.close()
 
 # Función para iniciar el torneo
 async def start_tournament(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     conn = psycopg2.connect(DATABASE_URL)
     cursor = conn.cursor()
-    cursor.execute('INSERT INTO tournaments DEFAULT VALUES RETURNING id')
-    tournament_id = cursor.fetchone()[0]
-    conn.commit()
+    cursor.execute('SELECT id FROM tournaments WHERE end_date IS NULL')
+    active_tournament = cursor.fetchone()
+    
+    if active_tournament:
+        await update.message.reply_text('⚠️ Ya hay un torneo en curso. Usa /end_tournament para finalizarlo.')
+    else:
+        cursor.execute('INSERT INTO tournaments DEFAULT VALUES RETURNING id')
+        tournament_id = cursor.fetchone()[0]
+        conn.commit()
+        await update.message.reply_text(f'¡El torneo ha comenzado! 🏁 ID del torneo: {tournament_id} 🏆')
     conn.close()
-
-    await update.message.reply_text(f'El torneo ha comenzado! Usa /match para registrar los resultados de los partidos. ID del torneo: {tournament_id}')
 
 # Función para registrar un partido
 async def register_match(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         if len(context.args) != 4:
-            await update.message.reply_text('Por favor, usa el formato: /match @jugador1 goles1 @jugador2 goles2')
+            await update.message.reply_text('⚠️ Por favor, usa el formato: /match @jugador1 goles1 @jugador2 goles2')
             return
         
         player1, score1, player2, score2 = context.args
@@ -89,7 +110,7 @@ async def register_match(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         cursor.execute('SELECT id FROM tournaments WHERE end_date IS NULL ORDER BY start_date DESC LIMIT 1')
         tournament_id = cursor.fetchone()
         if not tournament_id:
-            await update.message.reply_text('No hay un torneo en curso.')
+            await update.message.reply_text('No hay un torneo en curso. 🏳️')
             conn.close()
             return
 
@@ -100,9 +121,41 @@ async def register_match(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         # Actualizar estadísticas
         update_statistics(player1, score1, player2, score2)
         
-        await update.message.reply_text(f'Partido registrado: {player1} {score1} - {player2} {score2}')
+        await update.message.reply_text(f'Partido registrado: {player1} {score1} - {player2} {score2} ⚽️')
     except ValueError:
-        await update.message.reply_text('Error en el formato de los goles. Deben ser números.')
+        await update.message.reply_text('⚠️ Error en el formato de los goles. Deben ser números.')
+
+# Función para finalizar el torneo
+async def end_tournament(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    conn = psycopg2.connect(DATABASE_URL)
+    cursor = conn.cursor()
+    cursor.execute('SELECT id FROM tournaments WHERE end_date IS NULL ORDER BY start_date DESC LIMIT 1')
+    tournament_id = cursor.fetchone()
+
+    if not tournament_id:
+        await update.message.reply_text('No hay torneos en curso para finalizar. 🏳️')
+    else:
+        tournament_id = tournament_id[0]
+        cursor.execute('UPDATE tournaments SET end_date = CURRENT_TIMESTAMP WHERE id = %s', (tournament_id,))
+        conn.commit()
+        await update.message.reply_text(f'🏁 El torneo {tournament_id} ha finalizado.')
+    conn.close()
+
+# Función para mostrar logros
+async def achievements(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    conn = psycopg2.connect(DATABASE_URL)
+    cursor = conn.cursor()
+    cursor.execute('SELECT player, achievements FROM statistics WHERE achievements != \'\'')
+    achievements_data = cursor.fetchall()
+    conn.close()
+
+    if achievements_data:
+        message = "🏅 Logros de Jugadores 🏅\n\n"
+        for player, achievements in achievements_data:
+            message += f"{player}: {achievements}\n"
+        await update.message.reply_text(message)
+    else:
+        await update.message.reply_text("No hay logros registrados aún. ¡Participa en torneos y gana logros!")
 
 # Función para actualizar estadísticas
 def update_statistics(player1, score1, player2, score2):
@@ -128,115 +181,36 @@ def update_statistics(player1, score1, player2, score2):
     conn.commit()
     conn.close()
 
-# Función para finalizar el torneo
-async def end_tournament(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    conn = psycopg2.connect(DATABASE_URL)
-    cursor = conn.cursor()
+# Comando de ayuda
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    help_text = """
+Comandos disponibles:
+/start - Iniciar el bot
+/register NombreJugador - Registrar un jugador
+/start_tournament - Iniciar un torneo
+/end_tournament - Finalizar el torneo actual
+/match @jugador1 goles1 @jugador2 goles2 - Registrar un partido
+/achievements - Mostrar los logros de los jugadores
+/help - Mostrar este mensaje de ayuda
+    """
+    await update.message.reply_text(help_text)
 
-    # Finalizar el torneo actual
-    cursor.execute('UPDATE tournaments SET end_date = CURRENT_TIMESTAMP WHERE end_date IS NULL RETURNING id')
-    tournament_id = cursor.fetchone()
-    if not tournament_id:
-        await update.message.reply_text('No hay un torneo en curso.')
-        conn.close()
-        return
-
-    tournament_id = tournament_id[0]
-
-    # Obtener estadísticas
-    cursor.execute('''
-        SELECT player1, SUM(score1) AS total_goals
-        FROM matches
-        WHERE tournament_id = %s
-        GROUP BY player1
-        ORDER BY total_goals DESC
-        LIMIT 1
-    ''', (tournament_id,))
-    top_scorer = cursor.fetchone()
-
-    cursor.execute('''
-        SELECT player1, SUM(score1) AS total_goals
-        FROM matches
-        WHERE tournament_id = %s
-        GROUP BY player1
-        ORDER BY total_goals ASC
-        LIMIT 1
-    ''', (tournament_id,))
-    worst_performance = cursor.fetchone()
-
-    cursor.execute('''
-        SELECT player1, AVG(score1) AS average_goals
-        FROM matches
-        WHERE tournament_id = %s
-        GROUP BY player1
-        ORDER BY average_goals DESC
-        LIMIT 1
-    ''', (tournament_id,))
-    best_average_goals = cursor.fetchone()
-
-    # Determinar el campeón y la valla menos vencida
-    cursor.execute('''
-        SELECT player1, COUNT(*) AS wins
-        FROM matches
-        WHERE tournament_id = %s AND score1 > score2
-        GROUP BY player1
-        ORDER BY wins DESC
-        LIMIT 1
-    ''', (tournament_id,))
-    champion = cursor.fetchone()
-
-    cursor.execute('''
-        SELECT player1, SUM(score2) AS goals_received
-        FROM matches
-        WHERE tournament_id = %s
-        GROUP BY player1
-        ORDER BY goals_received ASC
-        LIMIT 1
-    ''', (tournament_id,))
-    best_defense = cursor.fetchone()
-
-    # Mensaje con estadísticas
-    message = "Torneo Finalizado!\n\n"
-    if top_scorer:
-        message += f"Goleador de la fecha: {top_scorer[0]} con {top_scorer[1]} goles\n"
-    if worst_performance:
-        message += f"Peor desempeño: {worst_performance[0]} con {worst_performance[1]} goles\n"
-    if best_average_goals:
-        message += f"Mejor promedio de goles: {best_average_goals[0]} con un promedio de {best_average_goals[1]:.2f}\n"
-    if champion:
-        message += f"Campeón: {champion[0]} con {champion[1]} victorias\n"
-    if best_defense:
-        message += f"Valla menos vencida: {best_defense[0]} con {best_defense[1]} goles recibidos\n"
-
-    await update.message.reply_text(message)
-
-    conn.close()
-
-# Función para borrar todos los datos
-async def clear_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    conn = psycopg2.connect(DATABASE_URL)
-    cursor = conn.cursor()
-    
-    # Eliminar todos los datos
-    cursor.execute('DELETE FROM matches')
-    cursor.execute('DELETE FROM statistics')
-    cursor.execute('DELETE FROM tournaments')
-
-    conn.commit()
-    conn.close()
-
-    await update.message.reply_text('Todos los datos han sido eliminados.')
-
-# Crear y ejecutar el bot
-if __name__ == '__main__':
+# Configuración de la aplicación de Telegram
+def main():
     init_db()
     application = ApplicationBuilder().token(TOKEN).build()
 
+    # Agregar manejadores de comandos
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CommandHandler('register', register_player))
     application.add_handler(CommandHandler('start_tournament', start_tournament))
     application.add_handler(CommandHandler('match', register_match))
     application.add_handler(CommandHandler('end_tournament', end_tournament))
-    application.add_handler(CommandHandler('clear_data', clear_data))
-
+    application.add_handler(CommandHandler('achievements', achievements))
+    application.add_handler(CommandHandler('help', help_command))
+    
+    # Iniciar la aplicación
     application.run_polling()
+
+if __name__ == '__main__':
+    main()
