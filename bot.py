@@ -7,7 +7,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 TOKEN = '7266284922:AAEkwTlo1C4rH74ziFTw8ySQMz8HU1JRGPM'
 
 # Obtener credenciales de la base de datos desde las variables de entorno
-DATABASE_URL = os.getenv(${{meticulous-empathy.DATABASE_URL}})
+DATABASE_URL = os.getenv('DATABASE_URL')
 
 # Crear base de datos y tablas
 def init_db():
