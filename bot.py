@@ -57,12 +57,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     buttons = [
         [InlineKeyboardButton("Registrar Jugador", callback_data='register')],
         [InlineKeyboardButton("Iniciar Torneo", callback_data='start_tournament')],
-        [InlineKeyboardButton("Modos de Juego", callback_data='game_modes')],
+        [InlineKeyboardButton("Foto de la cola de valen", callback_data='game_modes')],
         [InlineKeyboardButton("Logros", callback_data='achievements')],
         [InlineKeyboardButton("Ayuda", callback_data='help')]
     ]
     reply_markup = InlineKeyboardMarkup(buttons)
-    await update.message.reply_text('¡Hola, campeón! ⚽️ Bienvenido al bot de FIFA. ¿Qué te gustaría hacer?', reply_markup=reply_markup)
+    await update.message.reply_text('¡Hola, campeón! ⚽️ Bienvenido al bot de los pibardos, estas listo para el FIFA? ¿Qué te gustaría hacer?', reply_markup=reply_markup)
 
 # Función para manejar los botones del menú principal
 async def button_handler(update: Update, context: CallbackContext) -> None:
@@ -170,7 +170,7 @@ async def show_tournament_stats(update: Update, tournament_id) -> None:
     
     # Obtener estadísticas de los jugadores
     cursor.execute('''
-        SELECT player, SUM(goals) as total_goals, SUM(wins) as total_wins, SUM(losses) as total_losses
+        SELECT player, SUM(score1 + score2) as total_goals, SUM(CASE WHEN score1 > score2 THEN 1 ELSE 0 END) as total_wins, SUM(CASE WHEN score1 < score2 THEN 1 ELSE 0 END) as total_losses
         FROM matches
         JOIN statistics ON player = ANY (ARRAY[player1, player2])
         WHERE tournament_id = %s
@@ -215,17 +215,17 @@ async def game_modes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     reply_markup = InlineKeyboardMarkup(buttons)
     await update.message.reply_text('Selecciona el modo de juego:', reply_markup=reply_markup)
 
-# Función para aplicar el modo de juego
-async def apply_game_mode(update: Update, context: CallbackContext) -> None:
-    query = update.callback_query
-    data = query.data
-    
-    if data == 'mode_2':
-        await query.message.reply_text('Modo de juego 2 jugadores seleccionado.')
-    elif data == 'mode_4':
-        await query.message.reply_text('Modo de juego 4 jugadores seleccionado.')
-    elif data == 'mode_6':
-        await query.message.reply_text('Modo de juego 6 jugadores seleccionado.')
+# Función para manejar los comandos /help y otras funcionalidades
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    help_text = (
+        "/register NombreJugador - Registra un nuevo jugador\n"
+        "/start_tournament - Inicia un nuevo torneo\n"
+        "/end_tournament - Finaliza el torneo actual\n"
+        "/match @jugador1 goles1 @jugador2 goles2 - Registra un partido\n"
+        "/game_modes - Muestra los modos de juego disponibles\n"
+        "/achievements - Muestra los logros de los jugadores\n"
+    )
+    await update.message.reply_text(help_text)
 
 # Función para actualizar estadísticas
 def update_statistics(player1, score1, player2, score2):
@@ -237,7 +237,9 @@ def update_statistics(player1, score1, player2, score2):
         INSERT INTO statistics (player, goals, wins, losses)
         VALUES (%s, %s, %s, %s)
         ON CONFLICT (player)
-        DO UPDATE SET goals = statistics.goals + %s, wins = wins + CASE WHEN %s > %s THEN 1 ELSE wins END, losses = losses + CASE WHEN %s < %s THEN 1 ELSE losses END
+        DO UPDATE SET goals = statistics.goals + %s,
+                      wins = statistics.wins + CASE WHEN %s > %s THEN 1 ELSE 0 END,
+                      losses = statistics.losses + CASE WHEN %s < %s THEN 1 ELSE 0 END
     ''', (player1, score1, 1 if score1 > score2 else 0, 1 if score1 < score2 else 0, score1, score1, score2, score1, score2))
 
     # Actualizar estadísticas para el jugador 2
@@ -245,46 +247,25 @@ def update_statistics(player1, score1, player2, score2):
         INSERT INTO statistics (player, goals, wins, losses)
         VALUES (%s, %s, %s, %s)
         ON CONFLICT (player)
-        DO UPDATE SET goals = statistics.goals + %s, wins = wins + CASE WHEN %s > %s THEN 1 ELSE wins END, losses = losses + CASE WHEN %s < %s THEN 1 ELSE losses END
+        DO UPDATE SET goals = statistics.goals + %s,
+                      wins = statistics.wins + CASE WHEN %s > %s THEN 1 ELSE 0 END,
+                      losses = statistics.losses + CASE WHEN %s < %s THEN 1 ELSE 0 END
     ''', (player2, score2, 1 if score2 > score1 else 0, 1 if score2 < score1 else 0, score2, score2, score1, score2, score1))
 
     conn.commit()
     conn.close()
 
-# Comando de ayuda
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    help_text = """
-Comandos disponibles:
-/start - Iniciar el bot
-/register NombreJugador - Registrar un jugador
-/start_tournament - Iniciar un torneo
-/end_tournament - Finalizar el torneo actual
-/match @jugador1 goles1 @jugador2 goles2 - Registrar un partido
-/achievements - Mostrar los logros de los jugadores
-/help - Mostrar este mensaje de ayuda
-    """
-    await update.message.reply_text(help_text)
-
-# Configuración de la aplicación de Telegram
-def main():
+if __name__ == '__main__':
     init_db()
-    application = ApplicationBuilder().token(TOKEN).build()
 
-    # Agregar manejadores de comandos
+    application = ApplicationBuilder().token(TOKEN).build()
+    
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CommandHandler('register', register_player))
-    application.add_handler(CommandHandler('start_tournament', start_tournament))
     application.add_handler(CommandHandler('match', register_match))
     application.add_handler(CommandHandler('end_tournament', end_tournament))
     application.add_handler(CommandHandler('achievements', achievements))
-    application.add_handler(CommandHandler('help', help_command))
-    
-    # Agregar manejador de botones
     application.add_handler(CallbackQueryHandler(button_handler))
-    application.add_handler(CallbackQueryHandler(apply_game_mode))  # Manejador para los modos de juego
-    
-    # Iniciar la aplicación
-    application.run_polling()
+    application.add_handler(CommandHandler('help', help_command))
 
-if __name__ == '__main__':
-    main()
+    application.run_polling()
