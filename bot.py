@@ -57,9 +57,7 @@ def init_db():
 # Función que maneja el comando /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     buttons = [
-        [InlineKeyboardButton("Registrar Jugador", callback_data='register')],
         [InlineKeyboardButton("Iniciar Torneo", callback_data='start_tournament')],
-        [InlineKeyboardButton("Foto de la cola de valen", callback_data='game_modes')],
         [InlineKeyboardButton("Logros", callback_data='achievements')],
         [InlineKeyboardButton("Ayuda", callback_data='help')]
     ]
@@ -82,18 +80,17 @@ async def button_handler(update: Update, context: CallbackContext) -> None:
     elif data == 'help':
         await help_command(update, context)
 
-# Función para consultar el historial entre dos jugadores
-async def consultar_historial_entre(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # Verificar que se pasen exactamente dos argumentos (nombres de los jugadores)
+# Función para mostrar el historial de enfrentamientos entre dos jugadores
+async def show_match_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if len(context.args) != 2:
-        await update.message.reply_text('⚠️ Usa el formato: /consultar_historial_entre @jugador1 @jugador2')
+        await update.message.reply_text('⚠️ Por favor, proporciona los nombres de dos jugadores.')
         return
 
     player1_name, player2_name = context.args
 
     conn = psycopg2.connect(DATABASE_URL)
     cursor = conn.cursor()
-    
+
     try:
         # Obtener los IDs de los jugadores
         cursor.execute('SELECT id FROM players WHERE name = %s', (player1_name,))
@@ -108,16 +105,18 @@ async def consultar_historial_entre(update: Update, context: ContextTypes.DEFAUL
         player1_id = player1_id[0]
         player2_id = player2_id[0]
 
-        # Consultar cuántas veces ganó cada jugador contra el otro
+        # Contar las victorias de cada jugador en ambos roles
         cursor.execute('''
             SELECT 
-                (SELECT COUNT(*) FROM matches WHERE player1_id = %s AND player2_id = %s AND score1 > score2) AS player1_wins,
-                (SELECT COUNT(*) FROM matches WHERE player1_id = %s AND player2_id = %s AND score1 < score2) AS player2_wins
-        ''', (player1_id, player2_id, player1_id, player2_id))
+                (SELECT COUNT(*) FROM matches WHERE player1_id = %s AND player2_id = %s AND score1 > score2) +
+                (SELECT COUNT(*) FROM matches WHERE player2_id = %s AND player1_id = %s AND score2 > score1) AS player1_wins,
+                (SELECT COUNT(*) FROM matches WHERE player1_id = %s AND player2_id = %s AND score1 < score2) +
+                (SELECT COUNT(*) FROM matches WHERE player2_id = %s AND player1_id = %s AND score2 < score1) AS player2_wins
+        ''', (player1_id, player2_id, player1_id, player2_id, player2_id, player1_id, player2_id, player1_id))
         
         result = cursor.fetchone()
         player1_wins, player2_wins = result
-        
+
         # Mostrar el historial de enfrentamientos
         historial_message = (
             f'📊 Historial de Enfrentamientos entre {player1_name} y {player2_name}:\n'
@@ -127,9 +126,40 @@ async def consultar_historial_entre(update: Update, context: ContextTypes.DEFAUL
         await update.message.reply_text(historial_message)
         
     except Exception as e:
+        await update.message.reply_text(f'Error al obtener el historial de enfrentamientos: {e}')
+    finally:
+        conn.close()
+
+
+# Función para mostrar el historial de partidos
+async def historial(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    conn = psycopg2.connect(DATABASE_URL)
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute('''
+            SELECT p1.name, p2.name, m.score1, m.score2, t.start_date
+            FROM matches m
+            JOIN players p1 ON m.player1_id = p1.id
+            JOIN players p2 ON m.player2_id = p2.id
+            JOIN tournaments t ON m.tournament_id = t.id
+            ORDER BY t.start_date DESC
+        ''')
+        matches = cursor.fetchall()
+        
+        if matches:
+            historial_message = '📜 Historial de Partidos:\n'
+            for p1, p2, score1, score2, start_date in matches:
+                historial_message += f'{start_date}: {p1} {score1} - {p2} {score2}\n'
+        else:
+            historial_message = 'No se han registrado partidos aún.'
+        
+        await update.message.reply_text(historial_message)
+    except Exception as e:
         await update.message.reply_text(f'Error al consultar el historial: {e}')
     finally:
         conn.close()
+
 
 # Función para registrar jugadores
 async def register_player(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -332,5 +362,6 @@ if __name__ == '__main__':
     application.add_handler(CommandHandler("achievements", achievements))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("consultar_historial_entre", consultar_historial_entre))  # Añadir el nuevo comando aquí
+    application.add_handler(CommandHandler("historial", historial))
     application.add_handler(CallbackQueryHandler(button_handler))
     application.run_polling()
