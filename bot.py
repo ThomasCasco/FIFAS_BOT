@@ -81,7 +81,7 @@ async def button_handler(update: Update, context: CallbackContext) -> None:
         await help_command(update, context)
 
 # Función para mostrar el historial de enfrentamientos entre dos jugadores
-async def show_match_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def consultar_historial_entre(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if len(context.args) != 2:
         await update.message.reply_text('⚠️ Por favor, proporciona los nombres de dos jugadores.')
         return
