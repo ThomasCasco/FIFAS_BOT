@@ -107,15 +107,17 @@ async def consultar_historial_entre(update: Update, context: ContextTypes.DEFAUL
 
         # Contar las victorias de cada jugador en ambos roles
         cursor.execute('''
-            SELECT 
-                (SELECT COUNT(*) FROM matches WHERE player1_id = %s AND player2_id = %s AND score1 > score2) +
-                (SELECT COUNT(*) FROM matches WHERE player2_id = %s AND player1_id = %s AND score2 > score1) AS player1_wins,
-                (SELECT COUNT(*) FROM matches WHERE player1_id = %s AND player2_id = %s AND score1 < score2) +
-                (SELECT COUNT(*) FROM matches WHERE player2_id = %s AND player1_id = %s AND score2 < score1) AS player2_wins
-        ''', (player1_id, player2_id, player1_id, player2_id, player2_id, player1_id, player2_id, player1_id))
+            SELECT
+                SUM(CASE WHEN player1_id = %s AND score1 > score2 THEN 1 ELSE 0 END) +
+                SUM(CASE WHEN player2_id = %s AND score2 > score1 THEN 1 ELSE 0 END) AS player1_wins,
+                SUM(CASE WHEN player1_id = %s AND score1 < score2 THEN 1 ELSE 0 END) +
+                SUM(CASE WHEN player2_id = %s AND score2 < score1 THEN 1 ELSE 0 END) AS player2_wins
+            FROM matches
+            WHERE (player1_id = %s AND player2_id = %s) OR (player1_id = %s AND player2_id = %s)
+        ''', (player1_id, player1_id, player2_id, player2_id, player2_id, player1_id, player1_id, player2_id))
         
         result = cursor.fetchone()
-        player1_wins, player2_wins = result
+        player1_wins, player2_wins = result if result else (0, 0)
 
         # Mostrar el historial de enfrentamientos
         historial_message = (
