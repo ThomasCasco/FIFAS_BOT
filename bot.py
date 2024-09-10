@@ -149,6 +149,61 @@ async def historial(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     finally:
         conn.close()
 
+# Función para registrar un partido con apuesta y generar un link de transferencia
+async def register_match_apuesta(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    try:
+        if len(context.args) != 6:
+            await update.message.reply_text('⚠️ Por favor, usa el formato: /match_apuesta @jugador1 goles1 @jugador2 goles2 monto_apuesta alias')
+            return
+        
+        player1_name, score1, player2_name, score2, monto_apuesta, alias = context.args
+        score1, score2 = int(score1), int(score2)
+        monto_apuesta = float(monto_apuesta)  # Convertir el monto a número flotante
+
+        conn = psycopg2.connect(DATABASE_URL)
+        cursor = conn.cursor()
+
+        # Obtener los IDs de los jugadores
+        cursor.execute('SELECT id FROM players WHERE name = %s', (player1_name,))
+        player1_id = cursor.fetchone()
+        cursor.execute('SELECT id FROM players WHERE name = %s', (player2_name,))
+        player2_id = cursor.fetchone()
+
+        if player1_id and player2_id:
+            player1_id = player1_id[0]
+            player2_id = player2_id[0]
+            
+            # Registrar el partido
+            cursor.execute('INSERT INTO matches (player1_id, player2_id, score1, score2) VALUES (%s, %s, %s, %s)', (player1_id, player2_id, score1, score2))
+            conn.commit()
+
+            # Actualizar estadísticas
+            update_statistics(player1_name, score1, player2_name, score2)
+
+            # Crear un link de transferencia bancaria usando el alias
+            link_transferencia = generar_link_transferencia(alias, monto_apuesta)
+
+            await update.message.reply_text(
+                f'Partido registrado: {player1_name} {score1} - {player2_name} {score2} ⚽️\n'
+                f'Apuesta: {monto_apuesta} ARS\n'
+                f'Link de transferencia para {alias}: {link_transferencia}'
+            )
+        else:
+            await update.message.reply_text('Uno o ambos jugadores no están registrados.')
+    except ValueError:
+        await update.message.reply_text('⚠️ Error en el formato de los goles o el monto de la apuesta. Verifica que los goles sean números enteros y el monto de la apuesta sea un número válido.')
+    except Exception as e:
+        await update.message.reply_text(f'Error: {e}')
+    finally:
+        conn.close()
+
+# Función para generar un link de transferencia bancaria
+def generar_link_transferencia(alias, monto):
+    # Estructura del link de MercadoPago para transferencias directas
+    link_transferencia = f"https://www.mercadopago.com.ar/money-transfer?alias={alias}&amount={monto}"
+    return link_transferencia
+
+
 # Función para registrar jugadores
 async def register_player(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     player_name = ' '.join(context.args)
