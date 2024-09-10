@@ -44,7 +44,7 @@ def init_db():
             is_paid BOOLEAN DEFAULT FALSE
         )
     ''')
-    
+
     conn.commit()
     conn.close()
 
@@ -119,6 +119,15 @@ async def register_match(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         conn.commit()
         await update.message.reply_text(f'Partido registrado: {player1_name} {score1} - {player2_name} {score2}')
         
+        # Verificar si hay una apuesta
+        cursor.execute('SELECT id FROM bets WHERE player1_id = %s AND player2_id = %s AND is_paid = FALSE', (player1_id, player2_id))
+        bet = cursor.fetchone()
+        if bet:
+            winner_id = player1_id if score1 > score2 else player2_id
+            cursor.execute('UPDATE bets SET winner_id = %s WHERE id = %s', (winner_id, bet[0]))
+            conn.commit()
+            await update.message.reply_text(f'Apuesta asignada al ganador. Usa /pagar_apuesta <alias> para realizar el pago.')
+            
     except Exception as e:
         await update.message.reply_text(f'Error al registrar partido: {e}')
     finally:
@@ -158,6 +167,37 @@ async def partido_con_apuesta(update: Update, context: ContextTypes.DEFAULT_TYPE
     finally:
         conn.close()
 
+# Función para pagar la apuesta
+async def pagar_apuesta(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if len(context.args) != 1:
+        await update.message.reply_text('⚠️ Usa el formato: /pagar_apuesta <alias>')
+        return
+
+    alias = context.args[0]
+    conn = psycopg2.connect(DATABASE_URL)
+    cursor = conn.cursor()
+
+    try:
+        # Obtener la apuesta no pagada
+        cursor.execute('SELECT amount FROM bets WHERE is_paid = FALSE ORDER BY id DESC LIMIT 1')
+        bet = cursor.fetchone()
+
+        if bet:
+            amount = bet[0]
+            # Aquí es donde llamarías a la API de MercadoPago para crear el link de pago
+            mercadopago_link = f'https://www.mercadopago.com/pagar?amount={amount}&alias={alias}'
+            await update.message.reply_text(f'Por favor, realiza la transferencia usando este link: {mercadopago_link}')
+            
+            # Marcar la apuesta como pagada
+            cursor.execute('UPDATE bets SET is_paid = TRUE WHERE id = (SELECT id FROM bets ORDER BY id DESC LIMIT 1)')
+            conn.commit()
+        else:
+            await update.message.reply_text('No hay apuestas pendientes.')
+    except Exception as e:
+        await update.message.reply_text(f'Error al procesar el pago: {e}')
+    finally:
+        conn.close()
+
 # Función para mostrar el historial global de partidos
 async def historial(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     conn = psycopg2.connect(DATABASE_URL)
@@ -193,6 +233,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         '/register <nombre> - Registra un nuevo jugador.\n'
         '/match <jugador1> <goles1> <jugador2> <goles2> - Registra un partido.\n'
         '/partido_con_apuesta <jugador1> <jugador2> <monto> - Registra un partido con apuesta.\n'
+        '/pagar_apuesta <alias> - Paga la apuesta después de registrar un partido con apuesta.\n'
         '/historial - Muestra el historial global de partidos.\n'
     )
     await update.message.reply_text(help_message)
@@ -205,6 +246,7 @@ if __name__ == '__main__':
     application.add_handler(CommandHandler("register", register_player))
     application.add_handler(CommandHandler("match", register_match))
     application.add_handler(CommandHandler("partido_con_apuesta", partido_con_apuesta))
+    application.add_handler(CommandHandler("pagar_apuesta", pagar_apuesta))
     application.add_handler(CommandHandler("historial", historial))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CallbackQueryHandler(button_handler))
