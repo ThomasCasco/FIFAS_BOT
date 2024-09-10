@@ -55,12 +55,12 @@ def init_db():
     conn.commit()
     conn.close()
 
-
 # Función que maneja el comando /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     buttons = [
         [InlineKeyboardButton("Iniciar Torneo", callback_data='start_tournament')],
         [InlineKeyboardButton("Logros", callback_data='achievements')],
+        [InlineKeyboardButton("Leaderboard", callback_data='leaderboard')],
         [InlineKeyboardButton("Ayuda", callback_data='help')]
     ]
     reply_markup = InlineKeyboardMarkup(buttons)
@@ -71,98 +71,81 @@ async def button_handler(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     data = query.data
     
-    if data == 'register':
-        await query.message.reply_text('Por favor, usa el formato: /register NombreJugador')
-    elif data == 'start_tournament':
+    if data == 'start_tournament':
         await start_tournament(update, context)
-    elif data == 'game_modes':
-        await game_modes(update, context)
     elif data == 'achievements':
         await achievements(update, context)
+    elif data == 'leaderboard':
+        await leaderboard(update, context)
     elif data == 'help':
         await help_command(update, context)
 
-async def consultar_historial_entre(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if len(context.args) != 2:
-        await update.message.reply_text('⚠️ Por favor, proporciona los nombres de dos jugadores.')
-        return
+# Función para calcular nivel en base a experiencia
+def calculate_level(experience):
+    return experience // 1000  # Cada nivel requiere 1000 XP
 
-    player1_name, player2_name = context.args
+# Función para calcular rango en base al nivel
+def calculate_rank(level):
+    if level <= 5:
+        return "Bronce"
+    elif level <= 10:
+        return "Plata"
+    elif level <= 15:
+        return "Oro"
+    elif level <= 20:
+        return "Platino"
+    else:
+        return "Diamante"
 
+# Función para mostrar logros y títulos
+async def achievements(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     conn = psycopg2.connect(DATABASE_URL)
     cursor = conn.cursor()
+    cursor.execute('SELECT player, goals, wins, losses, experience FROM statistics ORDER BY wins DESC, goals DESC')
+    results = cursor.fetchall()
 
-    try:
-        # Obtener los IDs de los jugadores
-        cursor.execute('SELECT id FROM players WHERE name = %s', (player1_name,))
-        player1_id = cursor.fetchone()
-        cursor.execute('SELECT id FROM players WHERE name = %s', (player2_name,))
-        player2_id = cursor.fetchone()
+    # Obtener el jugador con más goles
+    cursor.execute('SELECT player, goals FROM statistics ORDER BY goals DESC LIMIT 1')
+    top_scorer = cursor.fetchone()
+    top_scorer_title = f'⚽ Goleador Supremo: {top_scorer[0]} con {top_scorer[1]} goles.\n' if top_scorer else ''
 
-        if not player1_id or not player2_id:
-            await update.message.reply_text('Uno o ambos jugadores no están registrados.')
-            return
+    achievements_message = '🏆 Logros:\n' + top_scorer_title
+    for player, goals, wins, losses, experience in results:
+        level = calculate_level(experience)
+        rank = calculate_rank(level)
+        achievements_message += f'{player} - Rango: {rank}, Nivel: {level}, Goles: {goals}, Victorias: {wins}, Derrotas: {losses}, XP: {experience}\n'
 
-        player1_id = player1_id[0]
-        player2_id = player2_id[0]
+    await update.message.reply_text(achievements_message)
+    conn.close()
 
-        # Consulta del historial
-        cursor.execute('''
-            SELECT
-                SUM(CASE WHEN player1_id = %s AND score1 > score2 THEN 1 ELSE 0 END) AS player1_wins,
-                SUM(CASE WHEN player2_id = %s AND score2 > score1 THEN 1 ELSE 0 END) AS player2_wins
-            FROM matches
-            WHERE (player1_id = %s AND player2_id = %s) OR (player1_id = %s AND player2_id = %s)
-        ''', (player1_id, player2_id, player1_id, player2_id, player2_id, player1_id))
-        
-        result = cursor.fetchone()
-        player1_wins = result[0] if result[0] is not None else 0
-        player2_wins = result[1] if result[1] is not None else 0
-
-        # Mostrar el historial de enfrentamientos
-        historial_message = (
-            f'📊 Historial de Enfrentamientos entre {player1_name} y {player2_name}:\n'
-            f'{player1_name} ha ganado {player1_wins} veces contra {player2_name}.\n'
-            f'{player2_name} ha ganado {player2_wins} veces contra {player1_name}.'
-        )
-        await update.message.reply_text(historial_message)
-        
-    except Exception as e:
-        await update.message.reply_text(f'Error al obtener el historial de enfrentamientos: {e}')
-    finally:
-        conn.close()
-
-
-
-# Función para mostrar el historial de partidos
-async def historial(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+# Función para mostrar la tabla de clasificación
+async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     conn = psycopg2.connect(DATABASE_URL)
     cursor = conn.cursor()
+    cursor.execute('SELECT player, experience FROM statistics ORDER BY experience DESC LIMIT 10')
+    results = cursor.fetchall()
     
-    try:
-        cursor.execute('''
-            SELECT p1.name, p2.name, m.score1, m.score2, t.start_date
-            FROM matches m
-            JOIN players p1 ON m.player1_id = p1.id
-            JOIN players p2 ON m.player2_id = p2.id
-            JOIN tournaments t ON m.tournament_id = t.id
-            ORDER BY t.start_date DESC
-        ''')
-        matches = cursor.fetchall()
-        
-        if matches:
-            historial_message = '📜 Historial de Partidos:\n'
-            for p1, p2, score1, score2, start_date in matches:
-                historial_message += f'{start_date}: {p1} {score1} - {p2} {score2}\n'
-        else:
-            historial_message = 'No se han registrado partidos aún.'
-        
-        await update.message.reply_text(historial_message)
-    except Exception as e:
-        await update.message.reply_text(f'Error al consultar el historial: {e}')
-    finally:
-        conn.close()
+    leaderboard_message = '🏅 Tabla de Clasificación:\n'
+    for rank, (player, experience) in enumerate(results, 1):
+        level = calculate_level(experience)
+        leaderboard_message += f'{rank}. {player} - Nivel {level}, XP: {experience}\n'
 
+    await update.message.reply_text(leaderboard_message)
+    conn.close()
+
+# Función para la ayuda
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    help_message = (
+        '📝 Comandos Disponibles:\n'
+        '/start - Inicia el bot y muestra el menú principal.\n'
+        '/register <nombre> - Registra un nuevo jugador.\n'
+        '/start_tournament <número de participantes> - Inicia un nuevo torneo.\n'
+        '/match <jugador1> <goles1> <jugador2> <goles2> - Registra un partido.\n'
+        '/end_tournament - Finaliza el torneo actual.\n'
+        '/achievements - Muestra los logros y estadísticas de los jugadores.\n'
+        '/leaderboard - Muestra la tabla de clasificación (XP).\n'
+    )
+    await update.message.reply_text(help_message)
 
 # Función para registrar jugadores
 async def register_player(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -296,7 +279,6 @@ def update_statistics(player1, score1, player2, score2):
     conn.commit()
     conn.close()
 
-
 # Función para finalizar el torneo
 async def end_tournament(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     conn = psycopg2.connect(DATABASE_URL)
@@ -326,48 +308,87 @@ async def end_tournament(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     conn.close()
 
-# Función para mostrar los modos de juego
-async def game_modes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    modes_message = (
-        '🔢 Modos de Torneo:\n'
-        '- Eliminación: Cada jugador es eliminado después de una derrota.\n'
-        '- Todos contra todos: Todos los jugadores se enfrentan entre sí.\n'
-    )
-    await update.message.reply_text(modes_message)
-
-# Función para mostrar los logros
-def calculate_level(experience):
-    # Supongamos que cada nivel requiere 1000 XP
-    return experience // 1000
-
-async def achievements(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+# Función para mostrar el historial de partidos
+async def historial(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     conn = psycopg2.connect(DATABASE_URL)
     cursor = conn.cursor()
-    cursor.execute('SELECT player, goals, wins, losses, experience FROM statistics ORDER BY wins DESC, goals DESC')
-    results = cursor.fetchall()
     
-    achievements_message = '🏆 Logros:\n'
-    for player, goals, wins, losses, experience in results:
-        level = calculate_level(experience)
-        achievements_message += f'{player} - Nivel: {level}, Goles: {goals}, Victorias: {wins}, Derrotas: {losses}, XP: {experience}\n'
-    
-    await update.message.reply_text(achievements_message)
-    conn.close()
+    try:
+        cursor.execute('''
+            SELECT p1.name, p2.name, m.score1, m.score2, t.start_date
+            FROM matches m
+            JOIN players p1 ON m.player1_id = p1.id
+            JOIN players p2 ON m.player2_id = p2.id
+            JOIN tournaments t ON m.tournament_id = t.id
+            ORDER BY t.start_date DESC
+        ''')
+        matches = cursor.fetchall()
+        
+        if matches:
+            historial_message = '📜 Historial de Partidos:\n'
+            for p1, p2, score1, score2, start_date in matches:
+                historial_message += f'{start_date}: {p1} {score1} - {p2} {score2}\n'
+        else:
+            historial_message = 'No se han registrado partidos aún.'
+        
+        await update.message.reply_text(historial_message)
+    except Exception as e:
+        await update.message.reply_text(f'Error al consultar el historial: {e}')
+    finally:
+        conn.close()
 
-# Función para la ayuda
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    help_message = (
-        '📝 Comandos Disponibles:\n'
-        '/start - Inicia el bot y muestra el menú principal.\n'
-        '/register <nombre> - Registra un nuevo jugador.\n'
-        '/start_tournament <número de participantes> - Inicia un nuevo torneo.\n'
-        '/match <jugador1> <goles1> <jugador2> <goles2> - Registra un partido.\n'
-        '/end_tournament - Finaliza el torneo actual.\n'
-        '/game_modes - Muestra los modos de juego disponibles.\n'
-        '/achievements - Muestra los logros y estadísticas de los jugadores.\n'
-    )
-    await update.message.reply_text(help_message)
+# Función para consultar el historial de enfrentamientos entre dos jugadores
+async def consultar_historial_entre(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if len(context.args) != 2:
+        await update.message.reply_text('⚠️ Por favor, proporciona los nombres de dos jugadores.')
+        return
 
+    player1_name, player2_name = context.args
+
+    conn = psycopg2.connect(DATABASE_URL)
+    cursor = conn.cursor()
+
+    try:
+        # Obtener los IDs de los jugadores
+        cursor.execute('SELECT id FROM players WHERE name = %s', (player1_name,))
+        player1_id = cursor.fetchone()
+        cursor.execute('SELECT id FROM players WHERE name = %s', (player2_name,))
+        player2_id = cursor.fetchone()
+
+        if not player1_id or not player2_id:
+            await update.message.reply_text('Uno o ambos jugadores no están registrados.')
+            return
+
+        player1_id = player1_id[0]
+        player2_id = player2_id[0]
+
+        # Consulta del historial
+        cursor.execute('''
+            SELECT
+                SUM(CASE WHEN player1_id = %s AND score1 > score2 THEN 1 ELSE 0 END) AS player1_wins,
+                SUM(CASE WHEN player2_id = %s AND score2 > score1 THEN 1 ELSE 0 END) AS player2_wins
+            FROM matches
+            WHERE (player1_id = %s AND player2_id = %s) OR (player1_id = %s AND player2_id = %s)
+        ''', (player1_id, player2_id, player1_id, player2_id, player2_id, player1_id))
+        
+        result = cursor.fetchone()
+        player1_wins = result[0] if result[0] is not None else 0
+        player2_wins = result[1] if result[1] is not None else 0
+
+        # Mostrar el historial de enfrentamientos
+        historial_message = (
+            f'📊 Historial de Enfrentamientos entre {player1_name} y {player2_name}:\n'
+            f'{player1_name} ha ganado {player1_wins} veces contra {player2_name}.\n'
+            f'{player2_name} ha ganado {player2_wins} veces contra {player1_name}.'
+        )
+        await update.message.reply_text(historial_message)
+        
+    except Exception as e:
+        await update.message.reply_text(f'Error al obtener el historial de enfrentamientos: {e}')
+    finally:
+        conn.close()
+
+# Inicializar la aplicación y ejecutar
 if __name__ == '__main__':
     init_db()
     application = ApplicationBuilder().token(TOKEN).build()
@@ -376,10 +397,10 @@ if __name__ == '__main__':
     application.add_handler(CommandHandler("start_tournament", start_tournament))
     application.add_handler(CommandHandler("match", register_match))
     application.add_handler(CommandHandler("end_tournament", end_tournament))
-    application.add_handler(CommandHandler("game_modes", game_modes))
-    application.add_handler(CommandHandler("achievements", achievements))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("consultar_historial_entre", consultar_historial_entre))  # Añadir el nuevo comando aquí
     application.add_handler(CommandHandler("historial", historial))
+    application.add_handler(CommandHandler("consultar_historial_entre", consultar_historial_entre))
+    application.add_handler(CommandHandler("achievements", achievements))
+    application.add_handler(CommandHandler("leaderboard", leaderboard))
+    application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CallbackQueryHandler(button_handler))
     application.run_polling()
