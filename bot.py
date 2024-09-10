@@ -44,15 +44,27 @@ def init_db():
             is_paid BOOLEAN DEFAULT FALSE
         )
     ''')
-
+    
+    # Crear tabla de estadísticas (logros)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS statistics (
+            player TEXT PRIMARY KEY,
+            goals INTEGER DEFAULT 0,
+            wins INTEGER DEFAULT 0,
+            losses INTEGER DEFAULT 0,
+            experience INTEGER DEFAULT 0 -- Para el sistema de logros y niveles
+        )
+    ''')
+    
     conn.commit()
     conn.close()
 
-# Función que maneja el comando /start
+# Función para manejar el comando /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     buttons = [
         [InlineKeyboardButton("Registrar Partido", callback_data='register_match')],
         [InlineKeyboardButton("Ver Historial", callback_data='historial')],
+        [InlineKeyboardButton("Ver Logros", callback_data='achievements')],
         [InlineKeyboardButton("Ayuda", callback_data='help')]
     ]
     reply_markup = InlineKeyboardMarkup(buttons)
@@ -67,8 +79,45 @@ async def button_handler(update: Update, context: CallbackContext) -> None:
         await query.message.reply_text('Por favor, usa el formato: /match <jugador1> <goles1> <jugador2> <goles2>')
     elif data == 'historial':
         await historial(update, context)
+    elif data == 'achievements':
+        await achievements(update, context)
     elif data == 'help':
         await help_command(update, context)
+
+# Función para calcular nivel en base a la experiencia
+def calculate_level(experience):
+    return experience // 1000  # Cada nivel requiere 1000 XP
+
+# Función para calcular rango en base al nivel
+def calculate_rank(level):
+    if level <= 5:
+        return "Bronce"
+    elif level <= 10:
+        return "Plata"
+    elif level <= 15:
+        return "Oro"
+    elif level <= 20:
+        return "Platino"
+    else:
+        return "Diamante"
+
+# Función para mostrar los logros (sistema de niveles y rangos)
+async def achievements(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    conn = psycopg2.connect(DATABASE_URL)
+    cursor = conn.cursor()
+    
+    # Consultar las estadísticas de los jugadores
+    cursor.execute('SELECT player, goals, wins, losses, experience FROM statistics ORDER BY wins DESC, experience DESC')
+    results = cursor.fetchall()
+    
+    achievements_message = '🏆 Logros:\n'
+    for player, goals, wins, losses, experience in results:
+        level = calculate_level(experience)
+        rank = calculate_rank(level)
+        achievements_message += f'{player} - Rango: {rank}, Nivel: {level}, Goles: {goals}, Victorias: {wins}, Derrotas: {losses}, XP: {experience}\n'
+    
+    await update.message.reply_text(achievements_message)
+    conn.close()
 
 # Función para registrar jugadores
 async def register_player(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -119,84 +168,49 @@ async def register_match(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         conn.commit()
         await update.message.reply_text(f'Partido registrado: {player1_name} {score1} - {player2_name} {score2}')
         
-        # Verificar si hay una apuesta
-        cursor.execute('SELECT id FROM bets WHERE player1_id = %s AND player2_id = %s AND is_paid = FALSE', (player1_id, player2_id))
-        bet = cursor.fetchone()
-        if bet:
-            winner_id = player1_id if score1 > score2 else player2_id
-            cursor.execute('UPDATE bets SET winner_id = %s WHERE id = %s', (winner_id, bet[0]))
-            conn.commit()
-            await update.message.reply_text(f'Apuesta asignada al ganador. Usa /pagar_apuesta <alias> para realizar el pago.')
-            
+        # Actualizar estadísticas
+        update_statistics(player1_name, score1, player2_name, score2)
+        
     except Exception as e:
         await update.message.reply_text(f'Error al registrar partido: {e}')
     finally:
         conn.close()
 
-# Función para crear apuestas
-async def partido_con_apuesta(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if len(context.args) != 3 or not context.args[2].isdigit():
-        await update.message.reply_text('⚠️ Usa el formato: /partido_con_apuesta <jugador1> <jugador2> <monto>')
-        return
-
-    player1_name, player2_name, amount = context.args
-    amount = int(amount)
-
+# Función para actualizar estadísticas de los jugadores
+def update_statistics(player1, score1, player2, score2):
     conn = psycopg2.connect(DATABASE_URL)
     cursor = conn.cursor()
 
-    try:
-        cursor.execute('SELECT id FROM players WHERE name = %s', (player1_name,))
-        player1_id = cursor.fetchone()
+    XP_WIN = 100  # Puntos de experiencia por ganar
+    XP_LOSS = 20  # Puntos de experiencia por perder
+    XP_GOAL = 10  # Puntos por cada gol marcado
 
-        cursor.execute('SELECT id FROM players WHERE name = %s', (player2_name,))
-        player2_id = cursor.fetchone()
+    # Actualizar estadísticas del jugador 1
+    xp_player1 = (XP_WIN if score1 > score2 else XP_LOSS) + (XP_GOAL * score1)
+    cursor.execute('''
+        INSERT INTO statistics (player, goals, wins, losses, experience)
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (player)
+        DO UPDATE SET goals = statistics.goals + %s,
+                      wins = statistics.wins + CASE WHEN %s > %s THEN 1 ELSE 0 END,
+                      losses = statistics.losses + CASE WHEN %s < %s THEN 1 ELSE 0 END,
+                      experience = statistics.experience + %s
+    ''', (player1, score1, 1 if score1 > score2 else 0, 1 if score1 < score2 else 0, xp_player1, score1, score1, score2, score1, score2, xp_player1))
 
-        if not player1_id or not player2_id:
-            await update.message.reply_text('Uno o ambos jugadores no están registrados.')
-            return
+    # Actualizar estadísticas del jugador 2
+    xp_player2 = (XP_WIN if score2 > score1 else XP_LOSS) + (XP_GOAL * score2)
+    cursor.execute('''
+        INSERT INTO statistics (player, goals, wins, losses, experience)
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (player)
+        DO UPDATE SET goals = statistics.goals + %s,
+                      wins = statistics.wins + CASE WHEN %s > %s THEN 1 ELSE 0 END,
+                      losses = statistics.losses + CASE WHEN %s < %s THEN 1 ELSE 0 END,
+                      experience = statistics.experience + %s
+    ''', (player2, score2, 1 if score2 > score1 else 0, 1 if score2 < score1 else 0, xp_player2, score2, score2, score1, score2, score1, xp_player2))
 
-        player1_id = player1_id[0]
-        player2_id = player2_id[0]
-
-        cursor.execute('INSERT INTO bets (player1_id, player2_id, amount) VALUES (%s, %s, %s)', (player1_id, player2_id, amount))
-        conn.commit()
-        await update.message.reply_text(f'Apuesta registrada entre {player1_name} y {player2_name} por {amount} pesos.')
-    except Exception as e:
-        await update.message.reply_text(f'Error al registrar apuesta: {e}')
-    finally:
-        conn.close()
-
-# Función para pagar la apuesta
-async def pagar_apuesta(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if len(context.args) != 1:
-        await update.message.reply_text('⚠️ Usa el formato: /pagar_apuesta <alias>')
-        return
-
-    alias = context.args[0]
-    conn = psycopg2.connect(DATABASE_URL)
-    cursor = conn.cursor()
-
-    try:
-        # Obtener la apuesta no pagada
-        cursor.execute('SELECT amount FROM bets WHERE is_paid = FALSE ORDER BY id DESC LIMIT 1')
-        bet = cursor.fetchone()
-
-        if bet:
-            amount = bet[0]
-            # Aquí es donde llamarías a la API de MercadoPago para crear el link de pago
-            mercadopago_link = f'https://www.mercadopago.com/pagar?amount={amount}&alias={alias}'
-            await update.message.reply_text(f'Por favor, realiza la transferencia usando este link: {mercadopago_link}')
-            
-            # Marcar la apuesta como pagada
-            cursor.execute('UPDATE bets SET is_paid = TRUE WHERE id = (SELECT id FROM bets ORDER BY id DESC LIMIT 1)')
-            conn.commit()
-        else:
-            await update.message.reply_text('No hay apuestas pendientes.')
-    except Exception as e:
-        await update.message.reply_text(f'Error al procesar el pago: {e}')
-    finally:
-        conn.close()
+    conn.commit()
+    conn.close()
 
 # Función para mostrar el historial global de partidos
 async def historial(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -233,8 +247,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         '/register <nombre> - Registra un nuevo jugador.\n'
         '/match <jugador1> <goles1> <jugador2> <goles2> - Registra un partido.\n'
         '/partido_con_apuesta <jugador1> <jugador2> <monto> - Registra un partido con apuesta.\n'
-        '/pagar_apuesta <alias> - Paga la apuesta después de registrar un partido con apuesta.\n'
         '/historial - Muestra el historial global de partidos.\n'
+        '/achievements - Muestra los logros y estadísticas de los jugadores.\n'
     )
     await update.message.reply_text(help_message)
 
@@ -245,8 +259,7 @@ if __name__ == '__main__':
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("register", register_player))
     application.add_handler(CommandHandler("match", register_match))
-    application.add_handler(CommandHandler("partido_con_apuesta", partido_con_apuesta))
-    application.add_handler(CommandHandler("pagar_apuesta", pagar_apuesta))
+    application.add_handler(CommandHandler("achievements", achievements))
     application.add_handler(CommandHandler("historial", historial))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CallbackQueryHandler(button_handler))
