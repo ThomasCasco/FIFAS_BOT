@@ -43,7 +43,7 @@ def init_db():
             score2 INTEGER
         )
     ''')
-      cursor.execute('''
+    cursor.execute('''
         CREATE TABLE IF NOT EXISTS bets (
             id SERIAL PRIMARY KEY,
             player1_id INTEGER REFERENCES players(id),
