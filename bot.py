@@ -92,25 +92,27 @@ async def consultar_historial_entre(update: Update, context: ContextTypes.DEFAUL
         player1_id = player1_id[0]
         player2_id = player2_id[0]
 
-        # Contar las victorias de cada jugador en ambos roles
+        # Obtener la cantidad de victorias para cada jugador
         cursor.execute('''
             SELECT
-                SUM(CASE WHEN player1_id = %s AND score1 > score2 THEN 1 ELSE 0 END) +
-                SUM(CASE WHEN player2_id = %s AND score2 > score1 THEN 1 ELSE 0 END) AS player1_wins,
-                SUM(CASE WHEN player1_id = %s AND score1 < score2 THEN 1 ELSE 0 END) +
-                SUM(CASE WHEN player2_id = %s AND score2 < score1 THEN 1 ELSE 0 END) AS player2_wins
-            FROM matches
-            WHERE (player1_id = %s AND player2_id = %s) OR (player1_id = %s AND player2_id = %s)
-        ''', (player1_id, player1_id, player2_id, player2_id, player2_id, player1_id, player1_id, player2_id))
-        
+                (SELECT COUNT(*) FROM matches WHERE player1_id = %s AND player2_id = %s AND score1 > score2) +
+                (SELECT COUNT(*) FROM matches WHERE player1_id = %s AND player2_id = %s AND score2 > score1)
+        ''', (player1_id, player2_id, player2_id, player1_id))
+
         result = cursor.fetchone()
-        player1_wins, player2_wins = result if result else (0, 0)
+
+        if result:
+            player1_wins = result[0]
+            player2_wins = result[1]
+        else:
+            player1_wins = 0
+            player2_wins = 0
 
         # Mostrar el historial de enfrentamientos
         historial_message = (
             f'📊 Historial de Enfrentamientos entre {player1_name} y {player2_name}:\n'
-            f'{player1_name} ha ganado {player1_wins} veces contra {player2_name}.\n'
-            f'{player2_name} ha ganado {player2_wins} veces contra {player1_name}.'
+            f'{player1_name} ha ganado {player1_wins} veces.\n'
+            f'{player2_name} ha ganado {player2_wins} veces.'
         )
         await update.message.reply_text(historial_message)
         
