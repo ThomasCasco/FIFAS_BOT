@@ -48,11 +48,13 @@ def init_db():
             player TEXT PRIMARY KEY,
             goals INTEGER DEFAULT 0,
             wins INTEGER DEFAULT 0,
-            losses INTEGER DEFAULT 0
+            losses INTEGER DEFAULT 0,
+            experience INTEGER DEFAULT 0 -- Columna de experiencia para gamificación
         )
     ''')
     conn.commit()
     conn.close()
+
 
 # Función que maneja el comando /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -80,7 +82,6 @@ async def button_handler(update: Update, context: CallbackContext) -> None:
     elif data == 'help':
         await help_command(update, context)
 
-# Función para mostrar el historial de enfrentamientos entre dos jugadores
 async def consultar_historial_entre(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if len(context.args) != 2:
         await update.message.reply_text('⚠️ Por favor, proporciona los nombres de dos jugadores.')
@@ -105,19 +106,18 @@ async def consultar_historial_entre(update: Update, context: ContextTypes.DEFAUL
         player1_id = player1_id[0]
         player2_id = player2_id[0]
 
-        # Contar las victorias de cada jugador en ambos roles
+        # Consulta del historial
         cursor.execute('''
             SELECT
-                SUM(CASE WHEN player1_id = %s AND score1 > score2 THEN 1 ELSE 0 END) +
-                SUM(CASE WHEN player2_id = %s AND score2 > score1 THEN 1 ELSE 0 END) AS player1_wins,
-                SUM(CASE WHEN player1_id = %s AND score1 < score2 THEN 1 ELSE 0 END) +
-                SUM(CASE WHEN player2_id = %s AND score2 < score1 THEN 1 ELSE 0 END) AS player2_wins
+                SUM(CASE WHEN player1_id = %s AND score1 > score2 THEN 1 ELSE 0 END) AS player1_wins,
+                SUM(CASE WHEN player2_id = %s AND score2 > score1 THEN 1 ELSE 0 END) AS player2_wins
             FROM matches
             WHERE (player1_id = %s AND player2_id = %s) OR (player1_id = %s AND player2_id = %s)
-        ''', (player1_id, player1_id, player2_id, player2_id, player2_id, player1_id, player1_id, player2_id))
+        ''', (player1_id, player2_id, player1_id, player2_id, player2_id, player1_id))
         
         result = cursor.fetchone()
-        player1_wins, player2_wins = result if result else (0, 0)
+        player1_wins = result[0] if result[0] is not None else 0
+        player2_wins = result[1] if result[1] is not None else 0
 
         # Mostrar el historial de enfrentamientos
         historial_message = (
@@ -131,6 +131,7 @@ async def consultar_historial_entre(update: Update, context: ContextTypes.DEFAUL
         await update.message.reply_text(f'Error al obtener el historial de enfrentamientos: {e}')
     finally:
         conn.close()
+
 
 
 # Función para mostrar el historial de partidos
@@ -263,28 +264,38 @@ def update_statistics(player1, score1, player2, score2):
     conn = psycopg2.connect(DATABASE_URL)
     cursor = conn.cursor()
 
+    # Definir los puntos de experiencia
+    XP_WIN = 100
+    XP_LOSS = 20
+    XP_GOAL = 10
+
     # Actualizar estadísticas para el jugador 1
+    xp_player1 = (XP_WIN if score1 > score2 else XP_LOSS) + (XP_GOAL * score1)
     cursor.execute('''
-        INSERT INTO statistics (player, goals, wins, losses)
-        VALUES (%s, %s, %s, %s)
+        INSERT INTO statistics (player, goals, wins, losses, experience)
+        VALUES (%s, %s, %s, %s, %s)
         ON CONFLICT (player)
         DO UPDATE SET goals = statistics.goals + %s,
                       wins = statistics.wins + CASE WHEN %s > %s THEN 1 ELSE 0 END,
-                      losses = statistics.losses + CASE WHEN %s < %s THEN 1 ELSE 0 END
-    ''', (player1, score1, 1 if score1 > score2 else 0, 1 if score1 < score2 else 0, score1, score1, score2, score1, score2))
+                      losses = statistics.losses + CASE WHEN %s < %s THEN 1 ELSE 0 END,
+                      experience = statistics.experience + %s
+    ''', (player1, score1, 1 if score1 > score2 else 0, 1 if score1 < score2 else 0, xp_player1, score1, score1, score2, score1, score2, xp_player1))
 
     # Actualizar estadísticas para el jugador 2
+    xp_player2 = (XP_WIN if score2 > score1 else XP_LOSS) + (XP_GOAL * score2)
     cursor.execute('''
-        INSERT INTO statistics (player, goals, wins, losses)
-        VALUES (%s, %s, %s, %s)
+        INSERT INTO statistics (player, goals, wins, losses, experience)
+        VALUES (%s, %s, %s, %s, %s)
         ON CONFLICT (player)
         DO UPDATE SET goals = statistics.goals + %s,
                       wins = statistics.wins + CASE WHEN %s > %s THEN 1 ELSE 0 END,
-                      losses = statistics.losses + CASE WHEN %s < %s THEN 1 ELSE 0 END
-    ''', (player2, score2, 1 if score2 > score1 else 0, 1 if score2 < score1 else 0, score2, score2, score1, score2, score1))
+                      losses = statistics.losses + CASE WHEN %s < %s THEN 1 ELSE 0 END,
+                      experience = statistics.experience + %s
+    ''', (player2, score2, 1 if score2 > score1 else 0, 1 if score2 < score1 else 0, xp_player2, score2, score2, score1, score2, score1, xp_player2))
 
     conn.commit()
     conn.close()
+
 
 # Función para finalizar el torneo
 async def end_tournament(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -325,15 +336,20 @@ async def game_modes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await update.message.reply_text(modes_message)
 
 # Función para mostrar los logros
+def calculate_level(experience):
+    # Supongamos que cada nivel requiere 1000 XP
+    return experience // 1000
+
 async def achievements(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     conn = psycopg2.connect(DATABASE_URL)
     cursor = conn.cursor()
-    cursor.execute('SELECT player, goals, wins, losses FROM statistics ORDER BY wins DESC, goals DESC')
+    cursor.execute('SELECT player, goals, wins, losses, experience FROM statistics ORDER BY wins DESC, goals DESC')
     results = cursor.fetchall()
     
     achievements_message = '🏆 Logros:\n'
-    for player, goals, wins, losses in results:
-        achievements_message += f'{player} - Goles: {goals}, Victorias: {wins}, Derrotas: {losses}\n'
+    for player, goals, wins, losses, experience in results:
+        level = calculate_level(experience)
+        achievements_message += f'{player} - Nivel: {level}, Goles: {goals}, Victorias: {wins}, Derrotas: {losses}, XP: {experience}\n'
     
     await update.message.reply_text(achievements_message)
     conn.close()
