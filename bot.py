@@ -43,6 +43,16 @@ def init_db():
             score2 INTEGER
         )
     ''')
+      cursor.execute('''
+        CREATE TABLE IF NOT EXISTS bets (
+            id SERIAL PRIMARY KEY,
+            player1_id INTEGER REFERENCES players(id),
+            player2_id INTEGER REFERENCES players(id),
+            amount INTEGER,
+            winner_id INTEGER,
+            is_paid BOOLEAN DEFAULT FALSE
+        )
+    ''')
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS statistics (
             player TEXT PRIMARY KEY,
@@ -202,11 +212,43 @@ async def start_tournament(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await update.message.reply_text(f'¡El torneo ha comenzado! 🏁 ID del torneo: {tournament_id} 🏆\nModo: {mode}\nPor favor, registra a los jugadores usando el comando /register_player <nombre>')
     conn.close()
 
+
+async def partido_con_apuesta(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if len(context.args) != 3 or not context.args[2].isdigit():
+        await update.message.reply_text('⚠️ Usa el formato: /partido_con_apuesta @jugador1 @jugador2 <monto>')
+        return
+
+    player1_name, player2_name, amount = context.args
+    amount = int(amount)
+
+    conn = psycopg2.connect(DATABASE_URL)
+    cursor = conn.cursor()
+
+    cursor.execute('SELECT id FROM players WHERE name = %s', (player1_name,))
+    player1_id = cursor.fetchone()
+    cursor.execute('SELECT id FROM players WHERE name = %s', (player2_name,))
+    player2_id = cursor.fetchone()
+
+    if not player1_id or not player2_id:
+        await update.message.reply_text('Uno o ambos jugadores no están registrados.')
+        return
+
+    player1_id = player1_id[0]
+    player2_id = player2_id[0]
+
+    cursor.execute('INSERT INTO bets (player1_id, player2_id, amount) VALUES (%s, %s, %s)', (player1_id, player2_id, amount))
+    conn.commit()
+    conn.close()
+
+    await update.message.reply_text(f'Apuesta creada entre {player1_name} y {player2_name} por {amount} pesos. ¡Esperando resultado del partido!')
+
+
+
 # Función para registrar un partido
 async def register_match(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         if len(context.args) != 4:
-            await update.message.reply_text('⚠️ Por favor, usa el formato: /match @jugador1 goles1 @jugador2 goles2')
+            await update.message.reply_text('⚠️ Usa el formato: /match @jugador1 goles1 @jugador2 goles2')
             return
         
         player1_name, score1, player2_name, score2 = context.args
@@ -214,14 +256,6 @@ async def register_match(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         conn = psycopg2.connect(DATABASE_URL)
         cursor = conn.cursor()
-        cursor.execute('SELECT id FROM tournaments WHERE end_date IS NULL ORDER BY start_date DESC LIMIT 1')
-        tournament_id = cursor.fetchone()
-        if not tournament_id:
-            await update.message.reply_text('No hay un torneo en curso. 🏳️')
-            conn.close()
-            return
-
-        tournament_id = tournament_id[0]
         cursor.execute('SELECT id FROM players WHERE name = %s', (player1_name,))
         player1_id = cursor.fetchone()
         cursor.execute('SELECT id FROM players WHERE name = %s', (player2_name,))
@@ -230,17 +264,24 @@ async def register_match(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if player1_id and player2_id:
             player1_id = player1_id[0]
             player2_id = player2_id[0]
-            cursor.execute('INSERT INTO matches (tournament_id, player1_id, player2_id, score1, score2) VALUES (%s, %s, %s, %s, %s)', (tournament_id, player1_id, player2_id, score1, score2))
+            cursor.execute('INSERT INTO matches (player1_id, player2_id, score1, score2) VALUES (%s, %s, %s, %s)', (player1_id, player2_id, score1, score2))
             conn.commit()
 
-            # Actualizar estadísticas
-            update_statistics(player1_name, score1, player2_name, score2)
-            
-            await update.message.reply_text(f'Partido registrado: {player1_name} {score1} - {player2_name} {score2} ⚽️')
+            # Verificar si hay una apuesta
+            cursor.execute('SELECT id FROM bets WHERE player1_id = %s AND player2_id = %s AND is_paid = FALSE', (player1_id, player2_id))
+            bet = cursor.fetchone()
+            if bet:
+                winner_id = player1_id if score1 > score2 else player2_id
+                cursor.execute('UPDATE bets SET winner_id = %s WHERE id = %s', (winner_id, bet[0]))
+                conn.commit()
+                await update.message.reply_text(f'Partido registrado: {player1_name} {score1} - {player2_name} {score2}. Se asignó el ganador para la apuesta. Solicita el alias para transferencia con /pagar_apuesta.')
+
         else:
             await update.message.reply_text('Uno o ambos jugadores no están registrados.')
     except ValueError:
         await update.message.reply_text('⚠️ Error en el formato de los goles. Deben ser números.')
+    finally:
+        conn.close()
 
 # Función para actualizar estadísticas
 def update_statistics(player1, score1, player2, score2):
@@ -307,6 +348,35 @@ async def end_tournament(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text('No hay torneos en curso.')
 
     conn.close()
+
+async def pagar_apuesta(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if len(context.args) != 1:
+        await update.message.reply_text('⚠️ Usa el formato: /pagar_apuesta <alias>')
+        return
+
+    alias = context.args[0]
+    conn = psycopg2.connect(DATABASE_URL)
+    cursor = conn.cursor()
+
+    # Obtener la apuesta no pagada
+    cursor.execute('SELECT amount FROM bets WHERE is_paid = FALSE ORDER BY id DESC LIMIT 1')
+    bet = cursor.fetchone()
+
+    if bet:
+        amount = bet[0]
+        # Aquí es donde llamarías a la API de MercadoPago para crear el link de pago
+        mercadopago_link = f'https://www.mercadopago.com/pagar?amount={amount}&alias={alias}'
+        await update.message.reply_text(f'Por favor, realiza la transferencia usando este link: {mercadopago_link}')
+        
+        # Marcar la apuesta como pagada
+        cursor.execute('UPDATE bets SET is_paid = TRUE WHERE id = (SELECT id FROM bets ORDER BY id DESC LIMIT 1)')
+        conn.commit()
+    else:
+        await update.message.reply_text('No hay apuestas pendientes.')
+
+    conn.close()
+
+
 
 # Función para mostrar el historial de partidos
 async def historial(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -402,5 +472,6 @@ if __name__ == '__main__':
     application.add_handler(CommandHandler("achievements", achievements))
     application.add_handler(CommandHandler("leaderboard", leaderboard))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("pagar_apuesta", pagar_apuesta))
     application.add_handler(CallbackQueryHandler(button_handler))
     application.run_polling()
