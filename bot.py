@@ -376,8 +376,6 @@ async def pagar_apuesta(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     conn.close()
 
-
-
 # Función para mostrar el historial de partidos
 async def historial(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     conn = psycopg2.connect(DATABASE_URL)
