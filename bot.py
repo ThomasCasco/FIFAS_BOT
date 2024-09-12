@@ -292,19 +292,72 @@ def update_statistics(player1, score1, player2, score2):
     conn.commit()
     conn.close()
 
-# Función para mostrar los logros
+# Función para mostrar los logros, incluyendo títulos y winrate
 async def achievements(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     conn = psycopg2.connect(DATABASE_URL)
     cursor = conn.cursor()
-    cursor.execute('SELECT player, goals, wins, losses FROM statistics ORDER BY wins DESC, goals DESC')
-    results = cursor.fetchall()
     
+    # Obtener estadísticas de los jugadores
+    cursor.execute('SELECT player, goals, wins, losses, titles FROM statistics ORDER BY titles DESC, wins DESC, goals DESC')
+    results = cursor.fetchall()
+
     achievements_message = '🏆 Logros:\n'
-    for player, goals, wins, losses in results:
-        achievements_message += f'{player} - Goles: {goals}, Victorias: {wins}, Derrotas: {losses}\n'
+    for player, goals, wins, losses, titles in results:
+        total_matches = wins + losses
+        winrate = (wins / total_matches * 100) if total_matches > 0 else 0
+        achievements_message += (
+            f'{player} - Goles: {goals}, Victorias: {wins}, Derrotas: {losses}, Winrate: {winrate:.2f}%, Títulos: {titles}\n'
+        )
     
     await update.message.reply_text(achievements_message)
     conn.close()
+
+
+# Función para registrar un partido por la copa
+async def register_match_copa(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    try:
+        if len(context.args) != 4:
+            await update.message.reply_text('⚠️ Por favor, usa el formato: /match_copa @jugador1 goles1 @jugador2 goles2')
+            return
+        
+        player1_name, score1, player2_name, score2 = context.args
+        score1, score2 = int(score1), int(score2)
+
+        conn = psycopg2.connect(DATABASE_URL)
+        cursor = conn.cursor()
+
+        # Obtener los IDs de los jugadores
+        cursor.execute('SELECT id FROM players WHERE name = %s', (player1_name,))
+        player1_id = cursor.fetchone()
+        cursor.execute('SELECT id FROM players WHERE name = %s', (player2_name,))
+        player2_id = cursor.fetchone()
+
+        if player1_id and player2_id:
+            player1_id = player1_id[0]
+            player2_id = player2_id[0]
+            
+            # Registrar el partido por la copa
+            cursor.execute('INSERT INTO matches (player1_id, player2_id, score1, score2) VALUES (%s, %s, %s, %s)', (player1_id, player2_id, score1, score2))
+            conn.commit()
+
+            # Actualizar estadísticas
+            update_statistics(player1_name, score1, player2_name, score2)
+
+            # Otorgar un título al ganador
+            if score1 > score2:
+                cursor.execute('UPDATE statistics SET titles = titles + 1 WHERE player = %s', (player1_name,))
+            elif score2 > score1:
+                cursor.execute('UPDATE statistics SET titles = titles + 1 WHERE player = %s', (player2_name,))
+            conn.commit()
+            
+            await update.message.reply_text(f'Partido por la copa registrado: {player1_name} {score1} - {player2_name} {score2} ⚽️')
+        else:
+            await update.message.reply_text('Uno o ambos jugadores no están registrados.')
+    except ValueError:
+        await update.message.reply_text('⚠️ Error en el formato de los goles. Deben ser números.')
+    finally:
+        conn.close()
+
 
 # Función para la ayuda
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -325,6 +378,7 @@ if __name__ == '__main__':
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("register", register_player))
     application.add_handler(CommandHandler("match", register_match))
+    application.add_handler(CommandHandler("match_copa", register_match_copa))
     application.add_handler(CommandHandler("consultar_historial_entre", consultar_historial_entre))
     application.add_handler(CommandHandler("historial", historial))
     application.add_handler(CommandHandler("achievements", achievements))
