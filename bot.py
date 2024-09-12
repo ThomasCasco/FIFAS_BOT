@@ -95,10 +95,11 @@ async def consultar_historial_entre(update: Update, context: ContextTypes.DEFAUL
         # Obtener la cantidad de victorias para cada jugador sin importar el orden de los jugadores
         cursor.execute('''
             SELECT 
-                SUM(CASE WHEN player1_id = %s AND player2_id = %s AND score1 > score2 THEN 1 ELSE 0 END) +
-                SUM(CASE WHEN player1_id = %s AND player2_id = %s AND score2 > score1 THEN 1 ELSE 0 END) as player1_wins,
-                SUM(CASE WHEN player1_id = %s AND player2_id = %s AND score1 > score2 THEN 1 ELSE 0 END) +
-                SUM(CASE WHEN player1_id = %s AND player2_id = %s AND score2 > score1 THEN 1 ELSE 0 END) as player2_wins
+                SUM(CASE WHEN (player1_id = %s AND player2_id = %s AND score1 > score2) OR 
+                              (player1_id = %s AND player2_id = %s AND score2 > score1) THEN 1 ELSE 0 END) as player1_wins,
+                SUM(CASE WHEN (player1_id = %s AND player2_id = %s AND score1 > score2) OR 
+                              (player1_id = %s AND player2_id = %s AND score2 > score1) THEN 1 ELSE 0 END) as player2_wins
+            FROM matches
         ''', (player1_id, player2_id, player2_id, player1_id, player2_id, player1_id, player1_id, player2_id))
 
         result = cursor.fetchone()
@@ -122,6 +123,7 @@ async def consultar_historial_entre(update: Update, context: ContextTypes.DEFAUL
         await update.message.reply_text(f'Error al obtener el historial de enfrentamientos: {e}')
     finally:
         conn.close()
+
 
 
 # Función para mostrar el historial de partidos global
