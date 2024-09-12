@@ -94,10 +94,10 @@ async def consultar_historial_entre(update: Update, context: ContextTypes.DEFAUL
 
         # Obtener la cantidad de victorias para cada jugador
         cursor.execute('''
-            SELECT
-                (SELECT COUNT(*) FROM matches WHERE player1_id = %s AND player2_id = %s AND score1 > score2) +
-                (SELECT COUNT(*) FROM matches WHERE player1_id = %s AND player2_id = %s AND score2 > score1)
-        ''', (player1_id, player2_id, player2_id, player1_id))
+            SELECT 
+                (SELECT COUNT(*) FROM matches WHERE player1_id = %s AND player2_id = %s AND score1 > score2) as player1_wins,
+                (SELECT COUNT(*) FROM matches WHERE player1_id = %s AND player2_id = %s AND score2 > score1) as player2_wins
+        ''', (player1_id, player2_id, player1_id, player2_id))
 
         result = cursor.fetchone()
 
@@ -120,6 +120,7 @@ async def consultar_historial_entre(update: Update, context: ContextTypes.DEFAUL
         await update.message.reply_text(f'Error al obtener el historial de enfrentamientos: {e}')
     finally:
         conn.close()
+
 
 # Función para mostrar el historial de partidos global
 async def historial(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
