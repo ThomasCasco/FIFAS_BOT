@@ -200,7 +200,7 @@ async def register_match_apuesta(update: Update, context: ContextTypes.DEFAULT_T
 # Función para generar un link de transferencia bancaria
 def generar_link_transferencia(alias, monto):
     # Estructura del link de MercadoPago para transferencias directas
-    link_transferencia = f"https://www.mercadopago.com.ar/money-transfer?alias={alias}&amount={monto}"
+    link_transferencia = f"https://www.mercadopago.com.ar"
     return link_transferencia
 
 
