@@ -92,12 +92,14 @@ async def consultar_historial_entre(update: Update, context: ContextTypes.DEFAUL
         player1_id = player1_id[0]
         player2_id = player2_id[0]
 
-        # Obtener la cantidad de victorias para cada jugador
+        # Obtener la cantidad de victorias para cada jugador sin importar el orden de los jugadores
         cursor.execute('''
             SELECT 
-                (SELECT COUNT(*) FROM matches WHERE player1_id = %s AND player2_id = %s AND score1 > score2) as player1_wins,
-                (SELECT COUNT(*) FROM matches WHERE player1_id = %s AND player2_id = %s AND score2 > score1) as player2_wins
-        ''', (player1_id, player2_id, player1_id, player2_id))
+                SUM(CASE WHEN player1_id = %s AND player2_id = %s AND score1 > score2 THEN 1 ELSE 0 END) +
+                SUM(CASE WHEN player1_id = %s AND player2_id = %s AND score2 > score1 THEN 1 ELSE 0 END) as player1_wins,
+                SUM(CASE WHEN player1_id = %s AND player2_id = %s AND score1 > score2 THEN 1 ELSE 0 END) +
+                SUM(CASE WHEN player1_id = %s AND player2_id = %s AND score2 > score1 THEN 1 ELSE 0 END) as player2_wins
+        ''', (player1_id, player2_id, player2_id, player1_id, player2_id, player1_id, player1_id, player2_id))
 
         result = cursor.fetchone()
 
